@@ -1,0 +1,870 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Heartfelt - Premium Dating Experience</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/axios/dist/axios.min.js"></script>
+    <script src="https://js.paystack.co/v1/inline.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/peerjs@1.4.7/dist/peerjs.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <style>
+        .gradient-bg {
+            background: linear-gradient(135deg, #ff6b6b 0%, #ee5a24 100%);
+        }
+        .card-hover {
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+        }
+        .card-hover:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1);
+        }
+        .swipe-card {
+            transition: transform 0.3s ease;
+        }
+        .swipe-left {
+            transform: translateX(-100%) rotate(-30deg);
+        }
+        .swipe-right {
+            transform: translateX(100%) rotate(30deg);
+        }
+        .heart-icon {
+            color: #ff6b6b;
+        }
+    </style>
+</head>
+<body class="bg-gray-50">
+    <div id="root"></div>
+    
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+
+        const App = () => {
+            const [user, setUser] = useState(null);
+            const [isAuthenticated, setIsAuthenticated] = useState(false);
+            const [page, setPage] = useState(\'login\');
+            const [profiles, setProfiles] = useState([]);
+            const [currentProfileIndex, setCurrentProfileIndex] = useState(0);
+            const [matches, setMatches] = useState([]);
+            const [messages, setMessages] = useState([]);
+            const [currentMatch, setCurrentMatch] = useState(null);
+            const [subscriptionPlans, setSubscriptionPlans] = useState({});
+            const [swipeAnimation, setSwipeAnimation] = useState(\'\');
+            const [socket, setSocket] = useState(null);
+            const [peer, setPeer] = useState(null);
+            const [call, setCall] = useState(null);
+            const videoRef = useRef(null);
+            const remoteVideoRef = useRef(null);
+
+            // Initialize Socket.IO
+            useEffect(() => {
+                const newSocket = io();
+                setSocket(newSocket);
+                
+                newSocket.on(\'receive_message\', (message) => {
+                    setMessages(prev => [...prev, message]);
+                });
+
+                return () => newSocket.close();
+            }, []);
+
+            // Initialize PeerJS
+            useEffect(() => {
+                if (user) {
+                    const newPeer = new Peer();
+                    setPeer(newPeer);
+                    
+                    newPeer.on(\'open\', (id) => {
+                        console.log(\'Peer ID:\', id);
+                    });
+                    
+                    newPeer.on(\'call\', (incomingCall) => {
+                        navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+                            .then(stream => {
+                                videoRef.current.srcObject = stream;
+                                incomingCall.answer(stream);
+                                incomingCall.on(\'stream\', remoteStream => {
+                                    remoteVideoRef.current.srcObject = remoteStream;
+                                });
+                                setCall(incomingCall);
+                            });
+                    });
+                }
+            }, [user]);
+
+            // Check for existing token
+            useEffect(() => {
+                const token = localStorage.getItem(\'heartfelt_token\');
+                if (token) {
+                    axios.defaults.headers.common[\'Authorization\'] = `Bearer ${token}`;
+                    // Verify token by fetching user profile
+                    fetchProfiles();
+                }
+            }, []);
+
+            // Fetch subscription plans
+            useEffect(() => {
+                fetchSubscriptionPlans();
+            }, []);
+
+            const fetchSubscriptionPlans = async () => {
+                try {
+                    const response = await axios.get(\'/api/subscription/plans\');
+                    setSubscriptionPlans(response.data);
+                } catch (error) {
+                    console.error(\'Error fetching plans:\', error);
+                }
+            };
+
+            const fetchProfiles = async () => {
+                try {
+                    const response = await axios.get(\'/api/profiles\');
+                    setProfiles(response.data.profiles);
+                    setUser(prev => ({ ...prev, swipe_count: response.data.swipe_count }));
+                    setIsAuthenticated(true);
+                    if (page === \'login\') setPage(\'home\');
+                } catch (error) {
+                    console.error(\'Error fetching profiles:\', error);
+                    localStorage.removeItem(\'heartfelt_token\');
+                    delete axios.defaults.headers.common[\'Authorization\'];
+                }
+            };
+
+            const fetchMatches = async () => {
+                try {
+                    const response = await axios.get(\'/api/matches\');
+                    setMatches(response.data.matches);
+                } catch (error) {
+                    console.error(\'Error fetching matches:\', error);
+                }
+            };
+
+            const fetchMessages = async (matchId) => {
+                try {
+                    const response = await axios.get(`/api/messages/${matchId}`);
+                    setMessages(response.data.messages);
+                } catch (error) {
+                    console.error(\'Error fetching messages:\', error);
+                }
+            };
+
+            const handleLogin = async (e) => {
+                e.preventDefault();
+                const formData = new FormData(e.target);
+                const data = Object.fromEntries(formData);
+                
+                try {
+                    const response = await axios.post(\'/api/auth/login\', data);
+                    const { token, user: userData } = response.data;
+                    
+                    localStorage.setItem(\'heartfelt_token\', token);
+                    axios.defaults.headers.common[\'Authorization\'] = `Bearer ${token}`;
+                    setUser(userData);
+                    setIsAuthenticated(true);
+                    
+                    if (userData.profile.name) {
+                        setPage(\'home\');
+                        fetchProfiles();
+                    } else {
+                        setPage(\'profile\');
+                    }
+                } catch (error) {
+                    alert(\'Login failed: \' + (error.response?.data?.message || \'Unknown error\'));
+                }
+            };
+
+            const handleSignup = async (e) => {
+                e.preventDefault();
+                const formData = new FormData(e.target);
+                const data = Object.fromEntries(formData);
+                
+                try {
+                    const response = await axios.post(\'/api/auth/signup\', data);
+                    const { token, user: userData } = response.data;
+                    
+                    localStorage.setItem(\'heartfelt_token\', token);
+                    axios.defaults.headers.common[\'Authorization\'] = `Bearer ${token}`;
+                    setUser(userData);
+                    setIsAuthenticated(true);
+                    setPage(\'profile\');
+                } catch (error) {
+                    alert(\'Signup failed: \' + (error.response?.data?.message || \'Unknown error\'));
+                }
+            };
+
+            const handleProfileSubmit = async (e) => {
+                e.preventDefault();
+                const formData = new FormData(e.target);
+                const data = Object.fromEntries(formData);
+                
+                // Convert age and income to numbers
+                data.age = parseInt(data.age);
+                data.income = parseInt(data.income);
+                
+                try {
+                    await axios.post(\'/api/profile\', data);
+                    setUser(prev => ({ ...prev, profile: { ...prev.profile, ...data } }));
+                    setPage(\'home\');
+                    fetchProfiles();
+                } catch (error) {
+                    alert(\'Profile update failed: \' + (error.response?.data?.message || \'Unknown error\'));
+                }
+            };
+
+            const handleSwipe = async (direction) => {
+                if (!profiles[currentProfileIndex]) return;
+                
+                const profileId = profiles[currentProfileIndex].id;
+                setSwipeAnimation(direction === \'right\' ? \'swipe-right\' : \'swipe-left\');
+                
+                setTimeout(async () => {
+                    try {
+                        const response = await axios.post(\'/api/swipe\', {
+                            target_user_id: profileId,
+                            direction: direction
+                        });
+                        
+                        if (response.data.needs_payment) {
+                            handleMaleSubscription();
+                        } else {
+                            if (response.data.is_match) {
+                                alert(\'💖 It\\\'s a match!\');
+                                fetchMatches();
+                            }
+                            setCurrentProfileIndex(prev => prev + 1);
+                            setUser(prev => ({ ...prev, swipe_count: response.data.swipe_count }));
+                        }
+                    } catch (error) {
+                        console.error(\'Swipe error:\', error);
+                    }
+                    setSwipeAnimation(\'\');
+                }, 300);
+            };
+
+            const handleSubscription = (planId, price) => {
+                const handler = PaystackPop.setup({
+                    key: \'pk_live_669ad09183f1ded9229c99297d5d67f539e3c828\',
+                    email: user.email,
+                    amount: price,
+                    currency: \'NGN\',
+                    callback: async (response) => {
+                        try {
+                            await axios.post(\'/api/subscription/verify\', {
+                                reference: response.reference,
+                                plan_id: planId
+                            });
+                            alert(\'Subscription updated successfully!\');
+                            setUser(prev => ({ ...prev, subscription: planId }));
+                            fetchProfiles();
+                        } catch (error) {
+                            alert(\'Subscription verification failed\');
+                        }
+                    },
+                    onClose: () => {
+                        console.log(\'Payment cancelled\');
+                    }
+                });
+                handler.openIframe();
+            };
+
+            const handleMaleSubscription = () => {
+                handleSubscription(\'male_unlimited\', 299900); // ₦2,999
+            };
+
+            const sendMessage = (e) => {
+                e.preventDefault();
+                const content = e.target.message.value.trim();
+                if (!content || !currentMatch) return;
+                
+                const messageData = {
+                    sender_id: user.id,
+                    receiver_id: currentMatch.user.id,
+                    content: content
+                };
+                
+                socket.emit(\'send_message\', messageData);
+                e.target.reset();
+            };
+
+            const startVideoCall = async () => {
+                if (!peer || !currentMatch) return;
+                
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                    videoRef.current.srcObject = stream;
+                    
+                    const call = peer.call(currentMatch.user.peer_id, stream);
+                    call.on(\'stream\', (remoteStream) => {
+                        remoteVideoRef.current.srcObject = remoteStream;
+                    });
+                    setCall(call);
+                } catch (error) {
+                    console.error(\'Video call error:\', error);
+                    alert(\'Could not start video call\');
+                }
+            };
+
+            const logout = () => {
+                localStorage.removeItem(\'heartfelt_token\');
+                delete axios.defaults.headers.common[\'Authorization\'];
+                setUser(null);
+                setIsAuthenticated(false);
+                setPage(\'login\');
+                if (socket) socket.disconnect();
+                if (peer) peer.destroy();
+            };
+
+            // Render login page
+            if (page === \'login\') {
+                return (
+                    <div className="min-h-screen gradient-bg flex items-center justify-center px-4">
+                        <div className="max-w-md w-full bg-white rounded-2xl shadow-2xl p-8">
+                            <div className="text-center mb-8">
+                                <h1 className="text-4xl font-bold text-gray-800 mb-2">
+                                    <span className="heart-icon">💖</span> Heartfelt
+                                </h1>
+                                <p className="text-gray-600">Premium Dating Experience</p>
+                            </div>
+                            
+                            <form onSubmit={handleLogin} className="space-y-6">
+                                <div>
+                                    <input
+                                        name="email"
+                                        type="email"
+                                        placeholder="Email"
+                                        className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent"
+                                        required
+                                    />
+                                </div>
+                                <div>
+                                    <input
+                                        name="password"
+                                        type="password"
+                                        placeholder="Password"
+                                        className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent"
+                                        required
+                                    />
+                                </div>
+                                <button
+                                    type="submit"
+                                    className="w-full bg-red-500 text-white py-3 rounded-lg font-semibold hover:bg-red-600 transition duration-200"
+                                >
+                                    Login
+                                </button>
+                            </form>
+                            
+                            <div className="mt-6 text-center">
+                                <button
+                                    onClick={() => setPage(\'signup\')}
+                                    className="text-red-500 hover:text-red-700 font-medium"
+                                >
+                                    Don\'t have an account? Sign up
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                );
+            }
+
+            // Render signup page
+            if (page === \'signup\') {
+                return (
+                    <div className="min-h-screen gradient-bg flex items-center justify-center px-4">
+                        <div className="max-w-md w-full bg-white rounded-2xl shadow-2xl p-8">
+                            <div className="text-center mb-8">
+                                <h1 className="text-4xl font-bold text-gray-800 mb-2">
+                                    <span className="heart-icon">💖</span> Heartfelt
+                                </h1>
+                                <p className="text-gray-600">Join Premium Dating</p>
+                            </div>
+                            
+                            <form onSubmit={handleSignup} className="space-y-6">
+                                <div>
+                                    <input
+                                        name="email"
+                                        type="email"
+                                        placeholder="Email"
+                                        className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent"
+                                        required
+                                    />
+                                </div>
+                                <div>
+                                    <input
+                                        name="password"
+                                        type="password"
+                                        placeholder="Password"
+                                        className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent"
+                                        required
+                                    />
+                                </div>
+                                <div>
+                                    <select
+                                        name="gender"
+                                        className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent"
+                                        required
+                                    >
+                                        <option value="">Select Gender</option>
+                                        <option value="male">Male</option>
+                                        <option value="female">Female</option>
+                                    </select>
+                                </div>
+                                <button
+                                    type="submit"
+                                    className="w-full bg-red-500 text-white py-3 rounded-lg font-semibold hover:bg-red-600 transition duration-200"
+                                >
+                                    Sign Up
+                                </button>
+                            </form>
+                            
+                            <div className="mt-6 text-center">
+                                <button
+                                    onClick={() => setPage(\'login\')}
+                                    className="text-red-500 hover:text-red-700 font-medium"
+                                >
+                                    Already have an account? Login
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                );
+            }
+
+            // Render profile setup page
+            if (page === \'profile\') {
+                return (
+                    <div className="min-h-screen bg-gray-50 py-8">
+                        <div className="max-w-2xl mx-auto px-4">
+                            <div className="bg-white rounded-2xl shadow-xl p-8">
+                                <div className="text-center mb-8">
+                                    <h1 className="text-3xl font-bold text-gray-800 mb-2">Complete Your Profile</h1>
+                                    <p className="text-gray-600">Tell us about yourself</p>
+                                </div>
+                                
+                                <form onSubmit={handleProfileSubmit} className="space-y-6">
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                        <div>
+                                            <input
+                                                name="name"
+                                                type="text"
+                                                placeholder="Full Name"
+                                                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent"
+                                                required
+                                            />
+                                        </div>
+                                        <div>
+                                            <input
+                                                name="age"
+                                                type="number"
+                                                placeholder="Age"
+                                                min="18"
+                                                max="100"
+                                                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent"
+                                                required
+                                            />
+                                        </div>
+                                    </div>
+                                    
+                                    <div>
+                                        <textarea
+                                            name="bio"
+                                            placeholder="Tell us about yourself..."
+                                            rows="4"
+                                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent"
+                                            required
+                                        ></textarea>
+                                    </div>
+                                    
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                        <div>
+                                            <input
+                                                name="occupation"
+                                                type="text"
+                                                placeholder="Occupation"
+                                                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent"
+                                                required
+                                            />
+                                        </div>
+                                        <div>
+                                            <input
+                                                name="income"
+                                                type="number"
+                                                placeholder="Monthly Income (₦)"
+                                                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent"
+                                                required
+                                            />
+                                        </div>
+                                    </div>
+                                    
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                        <div>
+                                            <input
+                                                name="location"
+                                                type="text"
+                                                placeholder="Location"
+                                                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent"
+                                                required
+                                            />
+                                        </div>
+                                        <div>
+                                            <input
+                                                name="interests"
+                                                type="text"
+                                                placeholder="Interests (comma separated)"
+                                                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent"
+                                                required
+                                            />
+                                        </div>
+                                    </div>
+                                    
+                                    <button
+                                        type="submit"
+                                        className="w-full bg-red-500 text-white py-3 rounded-lg font-semibold hover:bg-red-600 transition duration-200"
+                                    >
+                                        Complete Profile
+                                    </button>
+                                </form>
+                            </div>
+                        </div>
+                    </div>
+                );
+            }
+
+            // Render main app
+            if (page === \'home\') {
+                return (
+                    <div className="min-h-screen bg-gray-50">
+                        {/* Navigation */}
+                        <nav className="bg-white shadow-lg">
+                            <div className="max-w-7xl mx-auto px-4">
+                                <div className="flex justify-between items-center py-4">
+                                    <div className="flex items-center space-x-4">
+                                        <h1 className="text-2xl font-bold heart-icon">💖 Heartfelt</h1>
+                                        {user?.gender === \'male\' && (
+                                            <span className="text-sm text-gray-600">
+                                                Swipes: {user?.swipe_count || 0}/25
+                                            </span>
+                                        )}
+                                    </div>
+                                    <div className="flex items-center space-x-4">
+                                        <button
+                                            onClick={() => setPage(\'discover\')}
+                                            className="px-4 py-2 text-red-500 hover:bg-red-50 rounded-lg transition"
+                                        >
+                                            Discover
+                                        </button>
+                                        <button
+                                            onClick={() => { setPage(\'matches\'); fetchMatches(); }}
+                                            className="px-4 py-2 text-red-500 hover:bg-red-50 rounded-lg transition"
+                                        >
+                                            Matches
+                                        </button>
+                                        <button
+                                            onClick={() => setPage(\'subscription\')}
+                                            className="px-4 py-2 text-red-500 hover:bg-red-50 rounded-lg transition"
+                                        >
+                                            Subscription
+                                        </button>
+                                        <button
+                                            onClick={logout}
+                                            className="px-4 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 transition"
+                                        >
+                                            Logout
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        </nav>
+
+                        {/* Main Content */}
+                        <div className="max-w-4xl mx-auto px-4 py-8">
+                            {profiles.length > 0 && currentProfileIndex < profiles.length ? (
+                                <div className="flex justify-center">
+                                    <div className={`bg-white rounded-2xl shadow-xl p-8 max-w-md w-full ${swipeAnimation}`}>
+                                        <div className="text-center">
+                                            <div className="w-32 h-32 bg-gradient-to-br from-red-400 to-pink-400 rounded-full mx-auto mb-4 flex items-center justify-center text-4xl text-white">
+                                                {profiles[currentProfileIndex].name?.charAt(0) || \'?\'}
+                                            </div>
+                                            <h2 className="text-2xl font-bold text-gray-800 mb-2">
+                                                {profiles[currentProfileIndex].name}, {profiles[currentProfileIndex].age}
+                                            </h2>
+                                            <p className="text-gray-600 mb-4">{profiles[currentProfileIndex].occupation}</p>
+                                            <p className="text-gray-700 mb-4">{profiles[currentProfileIndex].bio}</p>
+                                            <p className="text-sm text-gray-500 mb-6">
+                                                📍 {profiles[currentProfileIndex].location} • 
+                                                💰 ₦{profiles[currentProfileIndex].income?.toLocaleString()}/month
+                                            </p>
+                                            <p className="text-sm text-gray-600 mb-8">
+                                                Interests: {profiles[currentProfileIndex].interests}
+                                            </p>
+                                            
+                                            <div className="flex justify-center space-x-4">
+                                                <button
+                                                    onClick={() => handleSwipe(\'left\')}
+                                                    className="w-16 h-16 bg-gray-200 rounded-full flex items-center justify-center text-2xl hover:bg-gray-300 transition"
+                                                >
+                                                    ❌
+                                                </button>
+                                                <button
+                                                    onClick={() => handleSwipe(\'right\')}
+                                                    className="w-16 h-16 bg-red-500 rounded-full flex items-center justify-center text-2xl text-white hover:bg-red-600 transition"
+                                                >
+                                                    💖
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            ) : (
+                                <div className="text-center py-16">
+                                    <h2 className="text-2xl font-bold text-gray-800 mb-4">No more profiles</h2>
+                                    <p className="text-gray-600 mb-8">Check back later for new matches!</p>
+                                    <button
+                                        onClick={fetchProfiles}
+                                        className="px-6 py-3 bg-red-500 text-white rounded-lg hover:bg-red-600 transition"
+                                    >
+                                        Refresh
+                                    </button>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                );
+            }
+
+            // Render matches page
+            if (page === \'matches\') {
+                return (
+                    <div className="min-h-screen bg-gray-50">
+                        <nav className="bg-white shadow-lg">
+                            <div className="max-w-7xl mx-auto px-4">
+                                <div className="flex justify-between items-center py-4">
+                                    <h1 className="text-2xl font-bold heart-icon">💖 Heartfelt</h1>
+                                    <button
+                                        onClick={() => setPage(\'home\')}
+                                        className="px-4 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 transition"
+                                    >
+                                        Back to Discover
+                                    </button>
+                                </div>
+                            </div>
+                        </nav>
+
+                        <div className="max-w-4xl mx-auto px-4 py-8">
+                            <h2 className="text-3xl font-bold text-gray-800 mb-8">Your Matches</h2>
+                            
+                            {matches.length > 0 ? (
+                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                                    {matches.map((match) => (
+                                        <div key={match.id} className="bg-white rounded-xl shadow-lg p-6 card-hover cursor-pointer"
+                                             onClick={() => { setCurrentMatch(match); setPage(\'chat\'); fetchMessages(match.id); }}>
+                                            <div className="text-center">
+                                                <div className="w-20 h-20 bg-gradient-to-br from-red-400 to-pink-400 rounded-full mx-auto mb-4 flex items-center justify-center text-2xl text-white">
+                                                    {match.user.name?.charAt(0) || \'?\'}
+                                                </div>
+                                                <h3 className="text-xl font-bold text-gray-800 mb-2">
+                                                    {match.user.name}, {match.user.age}
+                                                </h3>
+                                                {match.last_message.content && (
+                                                    <p className="text-gray-600 text-sm truncate">
+                                                        {match.last_message.content}
+                                                    </p>
+                                                )}
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            ) : (
+                                <div className="text-center py-16">
+                                    <h3 className="text-xl font-bold text-gray-800 mb-4">No matches yet</h3>
+                                    <p className="text-gray-600">Keep swiping to find your perfect match!</p>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                );
+            }
+
+            // Render chat page
+            if (page === \'chat\' && currentMatch) {
+                return (
+                    <div className="min-h-screen bg-gray-50 flex flex-col">
+                        <nav className="bg-white shadow-lg">
+                            <div className="max-w-7xl mx-auto px-4">
+                                <div className="flex justify-between items-center py-4">
+                                    <div className="flex items-center space-x-4">
+                                        <button
+                                            onClick={() => setPage(\'matches\')}
+                                            className="text-red-500 hover:text-red-700"
+                                        >
+                                            ← Back
+                                        </button>
+                                        <h1 className="text-xl font-bold text-gray-800">
+                                            {currentMatch.user.name}
+                                        </h1>
+                                    </div>
+                                    <button
+                                        onClick={startVideoCall}
+                                        className="px-4 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 transition"
+                                    >
+                                        📹 Video Call
+                                    </button>
+                                </div>
+                            </div>
+                        </nav>
+
+                        <div className="flex-1 max-w-4xl mx-auto w-full px-4 py-8 flex flex-col">
+                            <div className="flex-1 bg-white rounded-xl shadow-lg p-6 mb-4 overflow-y-auto">
+                                {messages.length > 0 ? (
+                                    <div className="space-y-4">
+                                        {messages.map((message) => (
+                                            <div key={message.id} className={`flex ${message.sender_id === user.id ? \'justify-end\' : \'justify-start\'}`}>
+                                                <div className={`max-w-xs px-4 py-2 rounded-lg ${
+                                                    message.sender_id === user.id 
+                                                        ? \'bg-red-500 text-white\' 
+                                                        : \'bg-gray-200 text-gray-800\'
+                                                }`}>
+                                                    {message.content}
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                ) : (
+                                    <div className="text-center text-gray-500 py-8">
+                                        Start the conversation! Say hello 👋
+                                    </div>
+                                )}
+                            </div>
+                            
+                            <form onSubmit={sendMessage} className="flex space-x-4">
+                                <input
+                                    name="message"
+                                    type="text"
+                                    placeholder="Type a message..."
+                                    className="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent"
+                                    required
+                                />
+                                <button
+                                    type="submit"
+                                    className="px-6 py-3 bg-red-500 text-white rounded-lg hover:bg-red-600 transition"
+                                >
+                                    Send
+                                </button>
+                            </form>
+                        </div>
+
+                        {/* Video call interface */}
+                        {call && (
+                            <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50">
+                                <div className="bg-white rounded-xl p-6 max-w-4xl w-full mx-4">
+                                    <div className="flex justify-between items-center mb-4">
+                                        <h3 className="text-xl font-bold">Video Call with {currentMatch.user.name}</h3>
+                                        <button
+                                            onClick={() => { call.close(); setCall(null); }}
+                                            className="px-4 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 transition"
+                                        >
+                                            End Call
+                                        </button>
+                                    </div>
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                        <video ref={videoRef} autoPlay muted className="w-full rounded-lg"></video>
+                                        <video ref={remoteVideoRef} autoPlay className="w-full rounded-lg"></video>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                );
+            }
+
+            // Render subscription page
+            if (page === \'subscription\') {
+                return (
+                    <div className="min-h-screen bg-gray-50">
+                        <nav className="bg-white shadow-lg">
+                            <div className="max-w-7xl mx-auto px-4">
+                                <div className="flex justify-between items-center py-4">
+                                    <h1 className="text-2xl font-bold heart-icon">💖 Heartfelt</h1>
+                                    <button
+                                        onClick={() => setPage(\'home\')}
+                                        className="px-4 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 transition"
+                                    >
+                                        Back to Discover
+                                    </button>
+                                </div>
+                            </div>
+                        </nav>
+
+                        <div className="max-w-6xl mx-auto px-4 py-8">
+                            <div className="text-center mb-12">
+                                <h2 className="text-4xl font-bold text-gray-800 mb-4">Choose Your Plan</h2>
+                                <p className="text-gray-600">Unlock premium features and find your perfect match</p>
+                            </div>
+
+                            {user?.gender === \'male\' && subscriptionPlans.male && (
+                                <div className="mb-12">
+                                    <h3 className="text-2xl font-bold text-gray-800 mb-6 text-center">For Men</h3>
+                                    <div className="flex justify-center">
+                                        {subscriptionPlans.male.map((plan) => (
+                                            <div key={plan.id} className="bg-white rounded-2xl shadow-xl p-8 max-w-sm card-hover">
+                                                <div className="text-center">
+                                                    <h4 className="text-2xl font-bold text-gray-800 mb-4">{plan.name}</h4>
+                                                    <div className="text-4xl font-bold text-red-500 mb-4">
+                                                        ₦{(plan.price / 100).toLocaleString()}
+                                                        <span className="text-lg text-gray-600">/month</span>
+                                                    </div>
+                                                    <p className="text-gray-600 mb-8">{plan.description}</p>
+                                                    <button
+                                                        onClick={() => handleSubscription(plan.id, plan.price)}
+                                                        className="w-full bg-red-500 text-white py-3 rounded-lg font-semibold hover:bg-red-600 transition"
+                                                    >
+                                                        Subscribe Now
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+
+                            {user?.gender === \'female\' && subscriptionPlans.female && (
+                                <div>
+                                    <h3 className="text-2xl font-bold text-gray-800 mb-6 text-center">For Women</h3>
+                                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                                        {subscriptionPlans.female.map((plan) => (
+                                            <div key={plan.id} className="bg-white rounded-2xl shadow-xl p-6 card-hover">
+                                                <div className="text-center">
+                                                    <h4 className="text-xl font-bold text-gray-800 mb-4">{plan.name}</h4>
+                                                    <div className="text-3xl font-bold text-red-500 mb-4">
+                                                        ₦{(plan.price / 100).toLocaleString()}
+                                                        <span className="text-sm text-gray-600">/month</span>
+                                                    </div>
+                                                    <p className="text-gray-600 mb-6 text-sm">{plan.description}</p>
+                                                    <button
+                                                        onClick={() => handleSubscription(plan.id, plan.price)}
+                                                        className="w-full bg-red-500 text-white py-2 rounded-lg font-semibold hover:bg-red-600 transition text-sm"
+                                                    >
+                                                        Subscribe
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                );
+            }
+
+            return null;
+        };
+
+        ReactDOM.render(<App />, document.getElementById(\'root\'));
+    </script>
+</body>
+</html>
+
